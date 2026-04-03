@@ -495,6 +495,10 @@ function startGame() {
 
   if (!music.ctx) music.init();
   if (music.ctx.state === 'suspended') music.ctx.resume();
+  if (musicOn) {
+    music.stop();
+    music.start();
+  }
 
   restartSpawner();
   animFrame = requestAnimationFrame(gameLoop);
