@@ -1,58 +1,147 @@
-// Generate ember particles
-(function() {
-  const container = document.getElementById('embers');
-  for (let i = 0; i < 20; i++) {
-    const ember = document.createElement('div');
-    ember.className = 'ember';
-    ember.style.left = Math.random() * 100 + '%';
-    ember.style.animationDuration = (6 + Math.random() * 8) + 's';
-    ember.style.animationDelay = Math.random() * 10 + 's';
-    ember.style.width = (2 + Math.random() * 2) + 'px';
-    ember.style.height = ember.style.width;
-    ember.style.background = Math.random() > 0.5 ? '#c9a84c' : '#ff8c42';
-    container.appendChild(ember);
-  }
-})();
+// ── Constants ────────────────────────────────────────────────────────
+const DIRS = ['left', 'up', 'down', 'right'];
+const SYMBOLS = { left: '\u25C0', up: '\u25B2', down: '\u25BC', right: '\u25B6' };
+const LANE_X = { left: 0, up: 1, down: 2, right: 3 };
+const KEY_MAP = { ArrowLeft: 'left', ArrowUp: 'up', ArrowDown: 'down', ArrowRight: 'right' };
+const BADGES = ['Apprentice', 'Journeyman', 'Blacksmith', 'Master Smith', 'Legendary'];
 
-// Spark burst effect
-function createSparkBurst(x, y, color) {
-  const track = document.getElementById('track');
-  const count = 8;
-  for (let i = 0; i < count; i++) {
-    const spark = document.createElement('div');
-    spark.className = 'spark';
-    spark.style.left = x + 'px';
-    spark.style.top = y + 'px';
-    spark.style.background = color;
-    const angle = (Math.PI * 2 / count) * i + Math.random() * 0.5;
-    const dist = 15 + Math.random() * 20;
-    const tx = Math.cos(angle) * dist;
-    const ty = Math.sin(angle) * dist;
-    spark.style.animation = 'none';
-    spark.style.transition = 'all 0.35s ease-out';
-    track.appendChild(spark);
-    requestAnimationFrame(() => {
-      spark.style.transform = `translate(${tx}px, ${ty}px) scale(0.3)`;
-      spark.style.opacity = '0';
-    });
-    setTimeout(() => spark.remove(), 400);
-  }
-}
+const CONFIG = {
+  trackHeight: 520,
+  startLives: 5,
+  startSpeed: 2.5,
+  maxSpeed: 5.5,
+  startSpawnRate: 1100,
+  minSpawnRate: 450,
+  scorePerLevel: 600,
+  perfectThreshold: 15,
+  perfectScore: 150,
+  goodScore: 100,
+  comboFireAt: 10,
+  comboMultEvery: 5,
+  speedPerLevel: 0.35,
+  spawnRatePerLevel: 80,
+};
 
-// Medieval music using Web Audio API
+const HIT_ZONE_TOP = CONFIG.trackHeight - 110;
+const HIT_ZONE_BOT = CONFIG.trackHeight - 50;
+const HIT_ZONE_CENTER = (HIT_ZONE_TOP + HIT_ZONE_BOT) / 2;
+
+// ── DOM Cache ────────────────────────────────────────────────────────
+const $ = (sel) => document.querySelector(sel);
+const $$ = (sel) => document.querySelectorAll(sel);
+
+const dom = {
+  embers: $('#embers'),
+  musicBtn: $('#musicBtn'),
+  startScreen: $('#startScreen'),
+  gameOverScreen: $('#gameOverScreen'),
+  startBtn: $('#startBtn'),
+  restartBtn: $('#restartBtn'),
+  gameContainer: $('#gameContainer'),
+  track: $('#track'),
+  score: $('#score'),
+  combo: $('#combo'),
+  speedBadge: $('#speedBadge'),
+  feedback: $('#feedback'),
+  nameInputArea: $('#nameInputArea'),
+  finalScore: $('#finalScore'),
+  finalPerfects: $('#finalPerfects'),
+  finalHits: $('#finalHits'),
+  finalMisses: $('#finalMisses'),
+  finalCombo: $('#finalCombo'),
+  shields: $$('.shield'),
+};
+
+// ── VFX ──────────────────────────────────────────────────────────────
+const VFX = {
+  initEmbers() {
+    for (let i = 0; i < 20; i++) {
+      const ember = document.createElement('div');
+      ember.className = 'ember';
+      const size = (2 + Math.random() * 2) + 'px';
+      Object.assign(ember.style, {
+        left: Math.random() * 100 + '%',
+        animationDuration: (6 + Math.random() * 8) + 's',
+        animationDelay: Math.random() * 10 + 's',
+        width: size,
+        height: size,
+        background: Math.random() > 0.5 ? '#c9a84c' : '#ff8c42',
+      });
+      dom.embers.appendChild(ember);
+    }
+  },
+
+  sparkBurst(x, y, color) {
+    const count = 8;
+    for (let i = 0; i < count; i++) {
+      const spark = document.createElement('div');
+      spark.className = 'spark';
+      Object.assign(spark.style, {
+        left: x + 'px',
+        top: y + 'px',
+        background: color,
+        animation: 'none',
+        transition: 'all 0.35s ease-out',
+      });
+      const angle = (Math.PI * 2 / count) * i + Math.random() * 0.5;
+      const dist = 15 + Math.random() * 20;
+      const tx = Math.cos(angle) * dist;
+      const ty = Math.sin(angle) * dist;
+      dom.track.appendChild(spark);
+      requestAnimationFrame(() => {
+        spark.style.transform = `translate(${tx}px, ${ty}px) scale(0.3)`;
+        spark.style.opacity = '0';
+      });
+      setTimeout(() => spark.remove(), 400);
+    }
+  },
+
+  levelUpFlash() {
+    const flash = document.createElement('div');
+    flash.className = 'level-up-flash';
+    dom.track.appendChild(flash);
+    setTimeout(() => flash.remove(), 800);
+  },
+
+  shake() {
+    dom.gameContainer.classList.add('shake');
+    setTimeout(() => dom.gameContainer.classList.remove('shake'), 300);
+  },
+};
+
+// ── Medieval Music (Web Audio API) ───────────────────────────────────
 class MedievalMusic {
-  constructor() {
-    this.ctx = null;
-    this.playing = false;
-    this.nodes = [];
-  }
+  ctx = null;
+  playing = false;
+  nodes = [];
+  intensity = 0;
+  melodyTimeout = null;
+  compressor = null;
+  delay = null;
+  delayGain = null;
+
+  static DRONE_FREQS = [65.41, 98.00, 130.81];
+  static DRONE_VOLS = [0.03, 0.02, 0.012];
+  static SCALES = [
+    [196.00, 220.00, 233.08, 261.63, 293.66, 329.63, 349.23, 392.00],
+    [196.00, 220.00, 233.08, 261.63, 293.66, 311.13, 349.23, 392.00],
+    [196.00, 207.65, 233.08, 261.63, 277.18, 311.13, 349.23, 392.00],
+    [196.00, 207.65, 233.08, 261.63, 277.18, 311.13, 369.99, 392.00],
+    [196.00, 207.65, 246.94, 261.63, 277.18, 329.63, 369.99, 392.00],
+  ];
+  static PATTERNS = [
+    [[0,2,4,5,4,2,0,3], [5,4,2,0,2,4,7,5]],
+    [[0,2,4,5,4,2,0,3], [0,0,3,4,4,2,0,2], [4,5,7,5,4,2,3,0]],
+    [[0,3,5,7,5,3,0,1,3,5,7,5], [7,5,3,1,0,1,3,5,7,5,3,0]],
+    [[0,1,3,5,7,5,3,1,0,3,7,5,3,1,0,1], [7,5,3,1,0,1,3,5,7,7,5,3,1,0,1,3]],
+    [[0,1,3,5,7,5,3,1,0,1,3,7,5,3,1,0,3,5,7,5], [7,5,3,0,1,3,5,7,5,3,1,0,3,5,7,5,3,1,0,1]],
+  ];
+  static WAVEFORMS = ['triangle', 'triangle', 'sawtooth', 'sawtooth', 'square'];
 
   init() {
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
-    // Master compressor for better sound
     this.compressor = this.ctx.createDynamicsCompressor();
     this.compressor.connect(this.ctx.destination);
-    // Reverb-like delay
     this.delay = this.ctx.createDelay();
     this.delay.delayTime.value = 0.15;
     this.delayGain = this.ctx.createGain();
@@ -61,37 +150,28 @@ class MedievalMusic {
     this.delayGain.connect(this.compressor);
   }
 
-  // Intensity level 0-4 controlled by game difficulty
-  intensity = 0;
+  ensure() {
+    if (!this.ctx) this.init();
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+  }
 
   setIntensity(level) {
     this.intensity = Math.min(level, 4);
-    // Shift drone pitch and volume with intensity
+    const { DRONE_FREQS, DRONE_VOLS } = MedievalMusic;
     this.nodes.forEach((n, i) => {
-      const baseFreqs = [65.41, 98.00, 130.81];
-      const baseVols = [0.03, 0.02, 0.012];
       if (i < 3 && n.osc && n.gain) {
-        // Raise drone pitch slightly and increase volume
         const pitchMult = 1 + this.intensity * 0.08;
         const volMult = 1 + this.intensity * 0.3;
         n.osc.frequency.linearRampToValueAtTime(
-          baseFreqs[i] * pitchMult, this.ctx.currentTime + 0.5);
+          DRONE_FREQS[i] * pitchMult, this.ctx.currentTime + 0.5);
         n.gain.gain.linearRampToValueAtTime(
-          Math.min(baseVols[i] * volMult, 0.08), this.ctx.currentTime + 0.5);
+          Math.min(DRONE_VOLS[i] * volMult, 0.08), this.ctx.currentTime + 0.5);
       }
     });
   }
 
   noteFreq(note) {
-    // Scales get darker/more minor at higher intensity
-    const scales = [
-      [196.00, 220.00, 233.08, 261.63, 293.66, 329.63, 349.23, 392.00], // Dorian - calm
-      [196.00, 220.00, 233.08, 261.63, 293.66, 311.13, 349.23, 392.00], // Natural minor
-      [196.00, 207.65, 233.08, 261.63, 277.18, 311.13, 349.23, 392.00], // Phrygian - tense
-      [196.00, 207.65, 233.08, 261.63, 277.18, 311.13, 369.99, 392.00], // Phrygian dominant
-      [196.00, 207.65, 246.94, 261.63, 277.18, 329.63, 369.99, 392.00], // Hungarian minor - intense
-    ];
-    const scale = scales[Math.min(this.intensity, scales.length - 1)];
+    const scale = MedievalMusic.SCALES[Math.min(this.intensity, 4)];
     return scale[note % scale.length] * (note >= 8 ? 2 : 1);
   }
 
@@ -103,13 +183,10 @@ class MedievalMusic {
     const filter = this.ctx.createBiquadFilter();
 
     filter.type = 'lowpass';
-    // Higher intensity = brighter, more piercing
     filter.frequency.value = 1500 + this.intensity * 400;
     filter.Q.value = 2 + this.intensity * 0.5;
 
-    // More aggressive waveform at higher intensity
-    const waveforms = ['triangle', 'triangle', 'sawtooth', 'sawtooth', 'square'];
-    osc.type = waveforms[Math.min(this.intensity, 4)];
+    osc.type = MedievalMusic.WAVEFORMS[Math.min(this.intensity, 4)];
     osc.frequency.value = freq;
     osc2.type = 'sine';
     osc2.frequency.value = freq * (1.003 + this.intensity * 0.002);
@@ -133,7 +210,8 @@ class MedievalMusic {
 
   playDrone() {
     if (!this.ctx) return;
-    [[65.41, 0.03], [98.00, 0.02], [130.81, 0.012]].forEach(([freq, vol]) => {
+    const { DRONE_FREQS, DRONE_VOLS } = MedievalMusic;
+    DRONE_FREQS.forEach((freq, i) => {
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
       const filter = this.ctx.createBiquadFilter();
@@ -141,7 +219,7 @@ class MedievalMusic {
       filter.frequency.value = 300;
       osc.type = 'sawtooth';
       osc.frequency.value = freq;
-      gain.gain.value = vol;
+      gain.gain.value = DRONE_VOLS[i];
       osc.connect(filter);
       filter.connect(gain);
       gain.connect(this.compressor);
@@ -150,7 +228,6 @@ class MedievalMusic {
     });
   }
 
-  // Add percussion at higher intensities
   playDrum(time) {
     if (!this.ctx || this.intensity < 2) return;
     const osc = this.ctx.createOscillator();
@@ -170,31 +247,14 @@ class MedievalMusic {
   playMelody() {
     if (!this.ctx || !this.playing) return;
     const now = this.ctx.currentTime;
-
-    // Patterns get more complex and frantic at higher intensity
-    const patternSets = [
-      // Level 0: Calm, simple
-      [[0,2,4,5,4,2,0,3], [5,4,2,0,2,4,7,5]],
-      // Level 1: Slightly more movement
-      [[0,2,4,5,4,2,0,3], [0,0,3,4,4,2,0,2], [4,5,7,5,4,2,3,0]],
-      // Level 2: Faster, darker patterns + drums
-      [[0,3,5,7,5,3,0,1,3,5,7,5], [7,5,3,1,0,1,3,5,7,5,3,0]],
-      // Level 3: Intense, rapid runs
-      [[0,1,3,5,7,5,3,1,0,3,7,5,3,1,0,1], [7,5,3,1,0,1,3,5,7,7,5,3,1,0,1,3]],
-      // Level 4: Maximum chaos
-      [[0,1,3,5,7,5,3,1,0,1,3,7,5,3,1,0,3,5,7,5], [7,5,3,0,1,3,5,7,5,3,1,0,3,5,7,5,3,1,0,1]],
-    ];
-
-    const set = patternSets[Math.min(this.intensity, 4)];
+    const set = MedievalMusic.PATTERNS[Math.min(this.intensity, 4)];
     const pattern = set[Math.floor(Math.random() * set.length)];
-    // Tempo increases with intensity
     const beatLen = Math.max(0.4 - this.intensity * 0.05, 0.2);
     const vol = 0.05 + this.intensity * 0.008;
 
     pattern.forEach((note, i) => {
       const offset = (Math.random() - 0.5) * 0.02;
       this.playNote(this.noteFreq(note), now + i * beatLen + offset, beatLen * 0.7, vol);
-      // Add drum hits on every 4th beat at intensity 2+
       if (i % 4 === 0) this.playDrum(now + i * beatLen);
     });
 
@@ -205,8 +265,7 @@ class MedievalMusic {
   }
 
   start() {
-    if (!this.ctx) this.init();
-    if (this.ctx.state === 'suspended') this.ctx.resume();
+    this.ensure();
     this.playing = true;
     this.intensity = 0;
     this.playDrone();
@@ -263,370 +322,348 @@ class MedievalMusic {
   }
 }
 
-const music = new MedievalMusic();
-let musicOn = false;
+// ── Leaderboard ──────────────────────────────────────────────────────
+class Leaderboard {
+  static KEY = 'arrow_forge_leaderboard';
+  static NAME_KEY = 'arrow_forge_name';
+  static MAX = 5;
 
-document.getElementById('musicBtn').addEventListener('click', () => {
-  musicOn = !musicOn;
-  const btn = document.getElementById('musicBtn');
-  btn.textContent = musicOn ? '\u266B Music On' : '\u266B Music';
-  btn.classList.toggle('active', musicOn);
-  if (musicOn) {
-    music.start();
-  } else {
-    music.stop();
-  }
-});
-
-// Game state
-const DIRS = ['left', 'up', 'down', 'right'];
-const SYMBOLS = { left: '\u25C0', up: '\u25B2', down: '\u25BC', right: '\u25B6' };
-const LANE_X = { left: 0, up: 1, down: 2, right: 3 };
-const KEY_MAP = { ArrowLeft: 'left', ArrowUp: 'up', ArrowDown: 'down', ArrowRight: 'right' };
-
-let gameActive = false;
-let score = 0;
-let lives = 5;
-let comboCount = 0;
-let bestCombo = 0;
-let perfects = 0;
-let hits = 0;
-let misses = 0;
-let arrows = [];
-let spawnInterval = null;
-let animFrame = null;
-let baseSpeed = 2.5;
-let spawnRate = 1100;
-let arrowId = 0;
-let difficulty = 0;
-
-const track = document.getElementById('track');
-const trackHeight = 520;
-const hitZoneTop = trackHeight - 110;
-const hitZoneBot = trackHeight - 50;
-const hitZoneCenter = (hitZoneTop + hitZoneBot) / 2;
-
-function showFeedback(text, cls) {
-  const fb = document.getElementById('feedback');
-  fb.textContent = text;
-  fb.className = 'feedback show ' + cls;
-  setTimeout(() => fb.className = 'feedback', 500);
-}
-
-function flashTarget(dir, type) {
-  const el = document.querySelector(`.target-arrow[data-dir="${dir}"]`);
-  el.classList.add(type);
-  setTimeout(() => el.classList.remove(type), 150);
-}
-
-function updateHUD() {
-  document.getElementById('score').textContent = score;
-  const shields = document.querySelectorAll('.shield');
-  shields.forEach((s, i) => {
-    s.classList.toggle('lost', i >= lives);
-  });
-
-  const comboEl = document.getElementById('combo');
-  if (comboCount > 1) {
-    comboEl.textContent = `Combo x${comboCount}`;
-    comboEl.classList.add('show');
-    comboEl.classList.toggle('fire', comboCount >= 10);
-  } else {
-    comboEl.classList.remove('show');
-    comboEl.classList.remove('fire');
+  static get() {
+    try { return JSON.parse(localStorage.getItem(this.KEY)) || []; }
+    catch { return []; }
   }
 
-  // Difficulty scaling
-  const newDiff = Math.floor(score / 600);
-  if (newDiff > difficulty) {
-    difficulty = newDiff;
-    baseSpeed = Math.min(2.5 + difficulty * 0.35, 5.5);
-    spawnRate = Math.max(1100 - difficulty * 80, 450);
-    restartSpawner();
-
-    const badges = ['Apprentice', 'Journeyman', 'Blacksmith', 'Master Smith', 'Legendary'];
-    document.getElementById('speedBadge').textContent = badges[Math.min(difficulty, badges.length - 1)];
-
-    // Level up flash
-    const flash = document.createElement('div');
-    flash.className = 'level-up-flash';
-    track.appendChild(flash);
-    setTimeout(() => flash.remove(), 800);
-
-    music.levelUpSound();
-    music.setIntensity(difficulty);
+  static save(lb) {
+    localStorage.setItem(this.KEY, JSON.stringify(lb));
   }
-}
 
-function spawnArrow() {
-  if (!gameActive) return;
+  static isHighScore(score) {
+    const lb = this.get();
+    return lb.length < this.MAX || score > (lb[lb.length - 1]?.score || 0);
+  }
 
-  const dir = DIRS[Math.floor(Math.random() * DIRS.length)];
-  const el = document.createElement('div');
-  el.className = 'arrow';
-  const inner = document.createElement('div');
-  inner.className = 'arrow-inner';
-  inner.textContent = SYMBOLS[dir];
-  el.appendChild(inner);
-  el.style.left = (LANE_X[dir] * 25) + '%';
-  el.style.top = '-45px';
-  track.appendChild(el);
+  static add(name, score) {
+    const lb = this.get();
+    const entry = { name: (name || 'Anonymous').slice(0, 16), score, date: Date.now() };
+    lb.push(entry);
+    lb.sort((a, b) => b.score - a.score);
+    if (lb.length > this.MAX) lb.length = this.MAX;
+    this.save(lb);
+    return lb.indexOf(entry);
+  }
 
-  arrows.push({
-    id: arrowId++,
-    dir,
-    el,
-    y: -45,
-    speed: baseSpeed + (Math.random() * 0.4 - 0.2),
-    hit: false,
-  });
-}
-
-function restartSpawner() {
-  clearInterval(spawnInterval);
-  spawnInterval = setInterval(spawnArrow, spawnRate);
-}
-
-function gameLoop() {
-  if (!gameActive) return;
-
-  arrows.forEach(a => {
-    if (a.hit) return;
-    a.y += a.speed;
-    a.el.style.top = a.y + 'px';
-
-    if (a.y > trackHeight) {
-      a.hit = true;
-      a.el.classList.add('missed');
-      setTimeout(() => a.el.remove(), 300);
-      lives--;
-      misses++;
-      comboCount = 0;
-      music.missSound();
-      showFeedback('Miss', 'miss-text');
-      flashTarget(a.dir, 'miss');
-      document.getElementById('gameContainer').classList.add('shake');
-      setTimeout(() => document.getElementById('gameContainer').classList.remove('shake'), 300);
-      updateHUD();
-
-      if (lives <= 0) {
-        endGame();
-        return;
-      }
+  static render(containerId, highlightIndex = -1) {
+    const container = document.getElementById(containerId);
+    const lb = this.get();
+    if (lb.length === 0) {
+      container.innerHTML = `
+        <div class="lb-title">Hall of Smiths</div>
+        <div class="lb-empty">No scores yet. Be the first!</div>`;
+      return;
     }
-  });
+    const rows = lb.map((e, i) => {
+      const hl = i === highlightIndex ? ' highlight new-entry' : '';
+      return `<div class="lb-entry${hl}">
+        <span class="lb-rank">${i + 1}</span>
+        <span class="lb-name">${e.name}</span>
+        <span class="lb-score">${e.score.toLocaleString()}</span>
+      </div>`;
+    }).join('');
+    container.innerHTML = `<div class="lb-title">Hall of Smiths</div><div class="lb-list">${rows}</div>`;
+  }
 
-  arrows = arrows.filter(a => !(a.hit && a.y > trackHeight + 50));
-  animFrame = requestAnimationFrame(gameLoop);
-}
+  static showNameInput(finalScore) {
+    const savedName = localStorage.getItem(this.NAME_KEY) || '';
+    dom.nameInputArea.innerHTML = `
+      <div class="new-high-label">New High Score!</div>
+      <div class="name-input-wrap">
+        <input class="name-input" id="playerName" type="text" maxlength="16"
+          placeholder="Thy name, smith" value="${savedName}" autofocus>
+        <button class="name-submit" id="submitName">Inscribe</button>
+      </div>`;
 
-function handleKeyPress(dir) {
-  if (!gameActive) return;
+    const input = $('#playerName');
+    const btn = $('#submitName');
 
-  let closest = null;
-  let closestDist = Infinity;
+    const submit = () => {
+      const name = input.value.trim();
+      localStorage.setItem(this.NAME_KEY, name);
+      const rank = this.add(name || 'Anonymous', finalScore);
+      dom.nameInputArea.innerHTML = '';
+      this.render('gameOverLeaderboard', rank);
+    };
 
-  arrows.forEach(a => {
-    if (a.hit || a.dir !== dir) return;
-    const dist = Math.abs(a.y + 20 - hitZoneCenter);
-    if (a.y + 20 >= hitZoneTop - 20 && a.y + 20 <= hitZoneBot + 20 && dist < closestDist) {
-      closest = a;
-      closestDist = dist;
-    }
-  });
-
-  if (closest) {
-    closest.hit = true;
-    const isPerfect = closestDist < 15;
-
-    // Calculate spark position
-    const rect = closest.el.getBoundingClientRect();
-    const trackRect = track.getBoundingClientRect();
-    const sparkX = rect.left - trackRect.left + rect.width / 2 - 30;
-    const sparkY = closest.y;
-
-    if (isPerfect) {
-      closest.el.classList.add('perfect');
-      score += 150 * Math.max(1, Math.floor(comboCount / 5));
-      perfects++;
-      music.perfectSound();
-      showFeedback('PERFECT', 'perfect-text');
-      createSparkBurst(sparkX + 30, sparkY + 20, '#ffd700');
-    } else {
-      closest.el.classList.add('hit');
-      score += 100 * Math.max(1, Math.floor(comboCount / 5));
-      hits++;
-      music.hitSound();
-      showFeedback('Good', 'good-text');
-      createSparkBurst(sparkX + 30, sparkY + 20, '#7ddf7d');
-    }
-
-    comboCount++;
-    if (comboCount > bestCombo) bestCombo = comboCount;
-    flashTarget(dir, 'flash');
-    setTimeout(() => closest.el.remove(), 300);
-    updateHUD();
+    btn.addEventListener('click', submit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') submit();
+      e.stopPropagation();
+    });
+    setTimeout(() => input.focus(), 100);
   }
 }
 
-function startGame() {
+// ── Game ──────────────────────────────────────────────────────────────
+class Game {
+  active = false;
   score = 0;
-  lives = 5;
-  comboCount = 0;
+  lives = 0;
+  combo = 0;
   bestCombo = 0;
   perfects = 0;
   hits = 0;
   misses = 0;
   difficulty = 0;
-  baseSpeed = 2.5;
-  spawnRate = 1100;
+  baseSpeed = 0;
+  spawnRate = 0;
   arrows = [];
-  gameActive = true;
+  arrowId = 0;
+  spawnInterval = null;
+  animFrame = null;
 
-  track.querySelectorAll('.arrow, .spark, .level-up-flash').forEach(el => el.remove());
-
-  document.getElementById('speedBadge').textContent = 'Apprentice';
-  updateHUD();
-
-  document.getElementById('startScreen').classList.add('hidden');
-  document.getElementById('gameOverScreen').classList.add('hidden');
-  document.getElementById('nameInputArea').innerHTML = '';
-  renderLeaderboard('startLeaderboard', -1);
-
-  if (!music.ctx) music.init();
-  if (music.ctx.state === 'suspended') music.ctx.resume();
-  if (musicOn) {
-    music.stop();
-    music.start();
+  constructor(music) {
+    this.music = music;
   }
 
-  restartSpawner();
-  animFrame = requestAnimationFrame(gameLoop);
-}
+  start() {
+    this.score = 0;
+    this.lives = CONFIG.startLives;
+    this.combo = 0;
+    this.bestCombo = 0;
+    this.perfects = 0;
+    this.hits = 0;
+    this.misses = 0;
+    this.difficulty = 0;
+    this.baseSpeed = CONFIG.startSpeed;
+    this.spawnRate = CONFIG.startSpawnRate;
+    this.arrows = [];
+    this.active = true;
 
-// Leaderboard (localStorage)
-const LB_KEY = 'arrow_forge_leaderboard';
-const LB_MAX = 5;
+    dom.track.querySelectorAll('.arrow, .spark, .level-up-flash').forEach(el => el.remove());
+    dom.speedBadge.textContent = BADGES[0];
+    this.updateHUD();
 
-function getLeaderboard() {
-  try {
-    return JSON.parse(localStorage.getItem(LB_KEY)) || [];
-  } catch { return []; }
-}
+    dom.startScreen.classList.add('hidden');
+    dom.gameOverScreen.classList.add('hidden');
+    dom.nameInputArea.innerHTML = '';
+    Leaderboard.render('startLeaderboard');
 
-function saveLeaderboard(lb) {
-  localStorage.setItem(LB_KEY, JSON.stringify(lb));
-}
-
-function isHighScore(s) {
-  const lb = getLeaderboard();
-  return lb.length < LB_MAX || s > (lb[lb.length - 1]?.score || 0);
-}
-
-function addToLeaderboard(name, s) {
-  const lb = getLeaderboard();
-  const entry = { name: name.slice(0, 16) || 'Anonymous', score: s, date: Date.now() };
-  lb.push(entry);
-  lb.sort((a, b) => b.score - a.score);
-  if (lb.length > LB_MAX) lb.length = LB_MAX;
-  saveLeaderboard(lb);
-  return lb.indexOf(entry);
-}
-
-function renderLeaderboard(containerId, highlightIndex) {
-  const container = document.getElementById(containerId);
-  const lb = getLeaderboard();
-  if (lb.length === 0) {
-    container.innerHTML = `
-      <div class="lb-title">Hall of Smiths</div>
-      <div class="lb-empty">No scores yet. Be the first!</div>`;
-    return;
-  }
-  const rows = lb.map((e, i) => {
-    const hl = i === highlightIndex ? ' highlight new-entry' : '';
-    return `<div class="lb-entry${hl}">
-      <span class="lb-rank">${i + 1}</span>
-      <span class="lb-name">${e.name}</span>
-      <span class="lb-score">${e.score.toLocaleString()}</span>
-    </div>`;
-  }).join('');
-  container.innerHTML = `<div class="lb-title">Hall of Smiths</div><div class="lb-list">${rows}</div>`;
-}
-
-function showNameInput(finalScore) {
-  const area = document.getElementById('nameInputArea');
-  const savedName = localStorage.getItem('arrow_forge_name') || '';
-  area.innerHTML = `
-    <div class="new-high-label">New High Score!</div>
-    <div class="name-input-wrap">
-      <input class="name-input" id="playerName" type="text" maxlength="16"
-        placeholder="Thy name, smith" value="${savedName}" autofocus>
-      <button class="name-submit" id="submitName">Inscribe</button>
-    </div>`;
-
-  const input = document.getElementById('playerName');
-  const btn = document.getElementById('submitName');
-
-  function submit() {
-    const name = input.value.trim();
-    localStorage.setItem('arrow_forge_name', name);
-    const rank = addToLeaderboard(name || 'Anonymous', finalScore);
-    area.innerHTML = '';
-    renderLeaderboard('gameOverLeaderboard', rank);
-  }
-
-  btn.addEventListener('click', submit);
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') submit();
-    e.stopPropagation();
-  });
-
-  setTimeout(() => input.focus(), 100);
-}
-
-// Show leaderboard on start screen
-renderLeaderboard('startLeaderboard', -1);
-
-function endGame() {
-  gameActive = false;
-  clearInterval(spawnInterval);
-  cancelAnimationFrame(animFrame);
-
-  document.getElementById('finalScore').textContent = score;
-  document.getElementById('finalPerfects').textContent = perfects;
-  document.getElementById('finalHits').textContent = hits;
-  document.getElementById('finalMisses').textContent = misses;
-  document.getElementById('finalCombo').textContent = bestCombo;
-
-  setTimeout(() => {
-    document.getElementById('gameOverScreen').classList.remove('hidden');
-    if (isHighScore(score) && score > 0) {
-      showNameInput(score);
-      renderLeaderboard('gameOverLeaderboard', -1);
-    } else {
-      document.getElementById('nameInputArea').innerHTML = '';
-      renderLeaderboard('gameOverLeaderboard', -1);
+    this.music.ensure();
+    if (musicOn) {
+      this.music.stop();
+      this.music.start();
     }
-  }, 600);
+
+    this.restartSpawner();
+    this.animFrame = requestAnimationFrame(() => this.loop());
+  }
+
+  end() {
+    this.active = false;
+    clearInterval(this.spawnInterval);
+    cancelAnimationFrame(this.animFrame);
+
+    dom.finalScore.textContent = this.score;
+    dom.finalPerfects.textContent = this.perfects;
+    dom.finalHits.textContent = this.hits;
+    dom.finalMisses.textContent = this.misses;
+    dom.finalCombo.textContent = this.bestCombo;
+
+    setTimeout(() => {
+      dom.gameOverScreen.classList.remove('hidden');
+      if (Leaderboard.isHighScore(this.score) && this.score > 0) {
+        Leaderboard.showNameInput(this.score);
+      } else {
+        dom.nameInputArea.innerHTML = '';
+      }
+      Leaderboard.render('gameOverLeaderboard');
+    }, 600);
+  }
+
+  updateHUD() {
+    dom.score.textContent = this.score;
+    dom.shields.forEach((s, i) => s.classList.toggle('lost', i >= this.lives));
+
+    if (this.combo > 1) {
+      dom.combo.textContent = `Combo x${this.combo}`;
+      dom.combo.classList.add('show');
+      dom.combo.classList.toggle('fire', this.combo >= CONFIG.comboFireAt);
+    } else {
+      dom.combo.classList.remove('show', 'fire');
+    }
+  }
+
+  checkDifficulty() {
+    const newDiff = Math.floor(this.score / CONFIG.scorePerLevel);
+    if (newDiff <= this.difficulty) return;
+
+    this.difficulty = newDiff;
+    this.baseSpeed = Math.min(CONFIG.startSpeed + this.difficulty * CONFIG.speedPerLevel, CONFIG.maxSpeed);
+    this.spawnRate = Math.max(CONFIG.startSpawnRate - this.difficulty * CONFIG.spawnRatePerLevel, CONFIG.minSpawnRate);
+    this.restartSpawner();
+
+    dom.speedBadge.textContent = BADGES[Math.min(this.difficulty, BADGES.length - 1)];
+    VFX.levelUpFlash();
+    this.music.levelUpSound();
+    this.music.setIntensity(this.difficulty);
+  }
+
+  spawnArrow() {
+    if (!this.active) return;
+
+    const dir = DIRS[Math.floor(Math.random() * DIRS.length)];
+    const el = document.createElement('div');
+    el.className = 'arrow';
+    el.style.left = (LANE_X[dir] * 25) + '%';
+    el.style.top = '-45px';
+
+    const inner = document.createElement('div');
+    inner.className = 'arrow-inner';
+    inner.textContent = SYMBOLS[dir];
+    el.appendChild(inner);
+    dom.track.appendChild(el);
+
+    this.arrows.push({
+      id: this.arrowId++,
+      dir,
+      el,
+      y: -45,
+      speed: this.baseSpeed + (Math.random() * 0.4 - 0.2),
+      hit: false,
+    });
+  }
+
+  restartSpawner() {
+    clearInterval(this.spawnInterval);
+    this.spawnInterval = setInterval(() => this.spawnArrow(), this.spawnRate);
+  }
+
+  loop() {
+    if (!this.active) return;
+
+    for (const a of this.arrows) {
+      if (a.hit) continue;
+      a.y += a.speed;
+      a.el.style.top = a.y + 'px';
+
+      if (a.y > CONFIG.trackHeight) {
+        a.hit = true;
+        a.el.classList.add('missed');
+        setTimeout(() => a.el.remove(), 300);
+        this.lives--;
+        this.misses++;
+        this.combo = 0;
+        this.music.missSound();
+        this.showFeedback('Miss', 'miss-text');
+        this.flashTarget(a.dir, 'miss');
+        VFX.shake();
+        this.updateHUD();
+
+        if (this.lives <= 0) {
+          this.end();
+          return;
+        }
+      }
+    }
+
+    this.arrows = this.arrows.filter(a => !(a.hit && a.y > CONFIG.trackHeight + 50));
+    this.animFrame = requestAnimationFrame(() => this.loop());
+  }
+
+  handleKey(dir) {
+    if (!this.active) return;
+
+    let closest = null;
+    let closestDist = Infinity;
+
+    for (const a of this.arrows) {
+      if (a.hit || a.dir !== dir) continue;
+      const center = a.y + 20;
+      const dist = Math.abs(center - HIT_ZONE_CENTER);
+      if (center >= HIT_ZONE_TOP - 20 && center <= HIT_ZONE_BOT + 20 && dist < closestDist) {
+        closest = a;
+        closestDist = dist;
+      }
+    }
+
+    if (!closest) return;
+
+    closest.hit = true;
+    const isPerfect = closestDist < CONFIG.perfectThreshold;
+    const comboMult = Math.max(1, Math.floor(this.combo / CONFIG.comboMultEvery));
+
+    const rect = closest.el.getBoundingClientRect();
+    const trackRect = dom.track.getBoundingClientRect();
+    const sparkX = rect.left - trackRect.left + rect.width / 2;
+    const sparkY = closest.y + 20;
+
+    if (isPerfect) {
+      closest.el.classList.add('perfect');
+      this.score += CONFIG.perfectScore * comboMult;
+      this.perfects++;
+      this.music.perfectSound();
+      this.showFeedback('PERFECT', 'perfect-text');
+      VFX.sparkBurst(sparkX, sparkY, '#ffd700');
+    } else {
+      closest.el.classList.add('hit');
+      this.score += CONFIG.goodScore * comboMult;
+      this.hits++;
+      this.music.hitSound();
+      this.showFeedback('Good', 'good-text');
+      VFX.sparkBurst(sparkX, sparkY, '#7ddf7d');
+    }
+
+    this.combo++;
+    if (this.combo > this.bestCombo) this.bestCombo = this.combo;
+    this.flashTarget(dir, 'flash');
+    setTimeout(() => closest.el.remove(), 300);
+    this.updateHUD();
+    this.checkDifficulty();
+  }
+
+  showFeedback(text, cls) {
+    dom.feedback.textContent = text;
+    dom.feedback.className = 'feedback show ' + cls;
+    setTimeout(() => dom.feedback.className = 'feedback', 500);
+  }
+
+  flashTarget(dir, type) {
+    const el = $(`.target-arrow[data-dir="${dir}"]`);
+    el.classList.add(type);
+    setTimeout(() => el.classList.remove(type), 150);
+  }
 }
+
+// ── Init ─────────────────────────────────────────────────────────────
+VFX.initEmbers();
+
+const music = new MedievalMusic();
+const game = new Game(music);
+let musicOn = false;
+
+dom.musicBtn.addEventListener('click', () => {
+  musicOn = !musicOn;
+  dom.musicBtn.textContent = musicOn ? '\u266B Music On' : '\u266B Music';
+  dom.musicBtn.classList.toggle('active', musicOn);
+  musicOn ? music.start() : music.stop();
+});
+
+dom.startBtn.addEventListener('click', () => game.start());
+dom.restartBtn.addEventListener('click', () => game.start());
 
 document.addEventListener('keydown', (e) => {
   if (KEY_MAP[e.key]) {
     e.preventDefault();
-    handleKeyPress(KEY_MAP[e.key]);
-  }
-});
-
-document.getElementById('startBtn').addEventListener('click', startGame);
-document.getElementById('restartBtn').addEventListener('click', startGame);
-
-document.addEventListener('keydown', (e) => {
-  const startVisible = !document.getElementById('startScreen').classList.contains('hidden');
-  const overVisible = !document.getElementById('gameOverScreen').classList.contains('hidden');
-  if (!gameActive && (startVisible || overVisible)) {
-    if (KEY_MAP[e.key] || e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      startGame();
+    if (game.active) {
+      game.handleKey(KEY_MAP[e.key]);
+    } else {
+      game.start();
     }
+    return;
+  }
+  if (!game.active && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    game.start();
   }
 });
+
+Leaderboard.render('startLeaderboard');
