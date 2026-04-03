@@ -62,7 +62,7 @@ body::before {
   align-items: center;
   gap: 16px;
   width: 100%;
-  max-width: 640px;
+  max-width: 780px;
   padding: 16px 20px;
 }
 
